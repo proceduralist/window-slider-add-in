@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Window Slider</title>
+<!-- Office.js. Loads only inside Office; harmless (feature-detected) when opened standalone. -->
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  :root{
+    --bg:#000;
+    --line:#ffffff;
+    --accent:#3ba0ff;
+    --panel:rgba(16,20,26,.92);
+    --panel-border:rgba(255,255,255,.14);
+    --text:#e8eef5;
+    --muted:#9aa7b4;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;overflow:hidden;}
+  #app{position:relative;width:100%;height:100%;background:var(--bg);}
+
+  /* ---------- comparison viewport ---------- */
+  #viewport{position:absolute;inset:0;overflow:hidden;background:var(--bg);
+    touch-action:none;cursor:ew-resize;}
+  #app.vert #viewport{cursor:ns-resize;}
+  .layer{position:absolute;inset:0;}
+  .layer img{width:100%;height:100%;object-fit:contain;display:block;
+    -webkit-user-drag:none;user-select:none;pointer-events:none;}
+  #clipA{will-change:clip-path;}
+
+  /* captions */
+  .caption{position:absolute;max-width:46%;padding:5px 11px;border-radius:999px;
+    background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.16);
+    color:var(--text);font-size:clamp(11px,2.4vw,15px);font-weight:600;
+    letter-spacing:.2px;line-height:1.2;pointer-events:none;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;backdrop-filter:blur(2px);
+    transition:top .18s ease, bottom .18s ease;}
+  /* caption corner positions are assigned dynamically in layoutCaptions() */
+
+  /* divider + handle */
+  #divider{position:absolute;inset:0;pointer-events:none;}
+  #dline{position:absolute;background:var(--line);
+    box-shadow:0 0 0 1px rgba(0,0,0,.35), 0 0 8px rgba(255,255,255,.55);}
+  #grip{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.96);
+    color:#0b0f14;display:flex;align-items:center;justify-content:center;
+    font-size:20px;font-weight:700;pointer-events:auto;cursor:grab;
+    box-shadow:0 2px 10px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.15);
+    transition:transform .08s ease, box-shadow .12s ease;}
+  #grip:hover{box-shadow:0 3px 14px rgba(0,0,0,.6), 0 0 0 3px rgba(59,160,255,.5);}
+  #grip:active{cursor:grabbing;}
+  #grip span{transform:translateY(-1px);}
+
+  /* transient "drag to compare" hint */
+  #hint{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);
+    padding:7px 14px;border-radius:999px;background:rgba(0,0,0,.6);
+    border:1px solid rgba(255,255,255,.18);color:var(--text);font-size:13px;
+    pointer-events:none;opacity:0;transition:opacity .5s ease;}
+  #hint.show{opacity:1;}
+
+  /* ---------- toolbar ---------- */
+  #toolbar{position:absolute;top:0;left:0;right:0;display:flex;gap:6px;
+    align-items:center;flex-wrap:wrap;padding:8px;z-index:20;
+    background:linear-gradient(to bottom,rgba(0,0,0,.6),rgba(0,0,0,0));
+    opacity:0;transform:translateY(-6px);transition:opacity .2s ease,transform .2s ease;
+    pointer-events:none;}
+  #toolbar.show{opacity:1;transform:none;pointer-events:auto;}
+  .btn{appearance:none;border:1px solid var(--panel-border);
+    background:var(--panel);color:var(--text);border-radius:8px;
+    padding:7px 11px;font-size:13px;font-weight:600;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+  .btn:hover{border-color:rgba(255,255,255,.32);}
+  .btn:active{transform:translateY(1px);}
+  .btn.icon{padding:7px 9px;}
+  .spacer{flex:1 1 auto;}
+  .status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;
+    padding:0 4px;}
+  .dot{width:8px;height:8px;border-radius:50%;background:#3ad07a;}
+  .dot.saving{background:#f2b544;}
+  .dot.error{background:#ef5f5f;}
+
+  /* ---------- presenter (slide show) mode ----------
+     While presenting, hide every editing control — image pickers, orientation,
+     swap, labels/options, save status. Only the re-center button remains. */
+  #app.presenting #btnA,
+  #app.presenting #btnB,
+  #app.presenting #btnOrient,
+  #app.presenting #btnSwap,
+  #app.presenting #btnGear,
+  #app.presenting .status{display:none;}
+  #app.presenting #settings{display:none !important;}
+
+  /* ---------- settings panel ---------- */
+  #settings{position:absolute;top:52px;right:8px;width:min(320px,92%);z-index:30;
+    background:var(--panel);border:1px solid var(--panel-border);border-radius:12px;
+    padding:14px;display:none;box-shadow:0 12px 40px rgba(0,0,0,.5);}
+  #settings.open{display:block;}
+  #settings h3{margin:0 0 10px;font-size:14px;font-weight:700;}
+  #settings label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;}
+  #settings input[type=text]{width:100%;padding:8px 10px;border-radius:8px;
+    border:1px solid var(--panel-border);background:#0d1218;color:var(--text);font-size:13px;}
+  .row{display:flex;gap:8px;align-items:center;}
+  .row .btn{flex:1;justify-content:center;}
+  .chk{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--text);}
+  .seg{display:flex;gap:6px;margin-top:6px;}
+  select{padding:7px 9px;border-radius:8px;border:1px solid var(--panel-border);
+    background:#0d1218;color:var(--text);font-size:13px;}
+  .note{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4;}
+
+  /* ---------- empty state ---------- */
+  #empty{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;z-index:10;}
+  #empty h1{margin:0;font-size:clamp(18px,3vw,24px);font-weight:700;letter-spacing:.3px;}
+  #empty p{margin:0;color:var(--muted);font-size:14px;max-width:420px;line-height:1.5;}
+  .drops{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
+  .drop{position:relative;overflow:hidden;width:150px;height:120px;
+    border:2px dashed rgba(255,255,255,.28);border-radius:14px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    cursor:pointer;color:var(--muted);font-size:13px;transition:border-color .15s,color .15s,background .15s;}
+  .drop:hover,.drop.hot{border-color:var(--accent);color:var(--text);background:rgba(59,160,255,.08);}
+  .drop .plus{font-size:26px;line-height:1;}
+  .drop b{color:var(--text);font-size:14px;}
+  .drop .thumb{display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45;z-index:0;}
+  .drop b,.drop .dstatus,.drop .plus,.drop .check{position:relative;z-index:1;}
+  .drop .check{display:none;font-size:26px;line-height:1;color:#3ad07a;font-weight:700;}
+  .drop.filled{border-style:solid;border-color:#3ad07a;background:rgba(58,208,122,.10);color:var(--text);}
+  .drop.filled .plus{display:none;}
+  .drop.filled .check{display:block;}
+  .drop.filled .thumb{display:block;}
+  .miss{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
+    background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.2);border-radius:999px;
+    padding:8px 14px;font-size:13px;display:none;}
+  .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,.12);
+    border-radius:5px;padding:1px 6px;font-size:12px;}
+
+  /* toast */
+  #toast{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:40;
+    background:rgba(20,26,34,.96);border:1px solid var(--panel-border);border-radius:9px;
+    padding:9px 14px;font-size:13px;opacity:0;transition:opacity .25s ease;pointer-events:none;
+    max-width:80%;}
+  #toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="app" class="horiz">
+  <div id="viewport">
+    <!-- Each caption lives INSIDE its image's clip container, so the divider
+         wipes the label together with its image. -->
+    <div class="layer" id="clipB"><img id="imgB" alt="" /><div class="caption" id="capB"></div></div>
+    <div class="layer" id="clipA"><img id="imgA" alt="" /><div class="caption" id="capA"></div></div>
+
+    <div id="divider">
+      <div id="dline"></div>
+      <div id="grip"><span id="gripIcon">&#8596;</span></div>
+    </div>
+
+    <div id="hint">Drag anywhere to compare</div>
+
+    <div id="empty">
+      <h1>Window Slider</h1>
+      <p>Load two versions of the same image &mdash; e.g. the same slice at two window/level settings &mdash; then drag to reveal one over the other, live during your talk.</p>
+      <div class="drops">
+        <div class="drop" id="dropA">
+          <img class="thumb" id="thumbA" alt="" />
+          <span class="plus">+</span>
+          <span class="check">&#10003;</span>
+          <b>Image A</b>
+          <span class="dstatus" id="statusA">click, drop, or paste</span>
+        </div>
+        <div class="drop" id="dropB">
+          <img class="thumb" id="thumbB" alt="" />
+          <span class="plus">+</span>
+          <span class="check">&#10003;</span>
+          <b>Image B</b>
+          <span class="dstatus" id="statusB">click, drop, or paste</span>
+        </div>
+      </div>
+      <p style="font-size:12px;">Load <b>both</b> images to start the slider. Use two images of the <b>same dimensions</b> so anatomy lines up exactly. Paste with <span class="kbd">&#8984; V</span>.</p>
+    </div>
+  </div>
+
+  <!-- toolbar -->
+  <div id="toolbar">
+    <button class="btn" id="btnA">Image&nbsp;A</button>
+    <button class="btn" id="btnB">Image&nbsp;B</button>
+    <button class="btn" id="btnOrient">&#8596; Side&#8209;by&#8209;side</button>
+    <button class="btn icon" id="btnSwap" title="Swap A / B">&#8646;</button>
+    <button class="btn icon" id="btnReset" title="Center the divider (50%)" aria-label="Center the divider"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:block"><circle cx="12" cy="12" r="3.2"/><line x1="12" y1="2.5" x2="12" y2="6.5"/><line x1="12" y1="17.5" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="6.5" y2="12"/><line x1="17.5" y1="12" x2="21.5" y2="12"/></svg></button>
+    <button class="btn icon" id="btnGear" title="Labels &amp; options" aria-label="Labels and options"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="display:block"><path d="M13.4 3H4.5A1.5 1.5 0 0 0 3 4.5v8.9c0 .27.11.52.3.71l7.09 7.09a1.5 1.5 0 0 0 2.12 0l6.58-6.58a1.5 1.5 0 0 0 0-2.12l-7.09-7.09a1 1 0 0 0-.71-.3z"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+    <span class="spacer"></span>
+    <span class="status"><span class="dot" id="saveDot"></span><span id="saveTxt">Ready</span></span>
+  </div>
+
+  <!-- settings -->
+  <div id="settings">
+    <h3>Labels &amp; options</h3>
+    <label for="inLabelA">Label for Image A</label>
+    <input type="text" id="inLabelA" placeholder="e.g. Lung window" maxlength="60" />
+    <label for="inLabelB">Label for Image B</label>
+    <input type="text" id="inLabelB" placeholder="e.g. Mediastinal window" maxlength="60" />
+    <div class="chk"><input type="checkbox" id="chkLabels" checked /><label for="chkLabels" style="margin:0;color:var(--text);">Show labels on slide</label></div>
+
+    <label for="selSlot">Slot (for multiple comparisons in one deck)</label>
+    <div class="row">
+      <select id="selSlot">
+        <option>1</option><option>2</option><option>3</option><option>4</option>
+        <option>5</option><option>6</option><option>7</option><option>8</option>
+      </select>
+      <button class="btn" id="btnReplaceA">Replace A</button>
+      <button class="btn" id="btnReplaceB">Replace B</button>
+    </div>
+    <div class="note">Each slot stores its own image pair inside the presentation. Use different slots only if you place more than one slider in the same deck.</div>
+    <div class="row" style="margin-top:12px;">
+      <button class="btn" id="btnClose" style="flex:1;justify-content:center;">Done</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <input type="file" id="fileA" accept="image/*" hidden />
+  <input type="file" id="fileB" accept="image/*" hidden />
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- state ----------
+  var state = { imgA:null, imgB:null, pos:0.5, orient:"h",
+                labelA:"", labelB:"", showLabels:true, slot:"1" };
+  var presenting = false;   // true while the deck is in Slide Show (read) view
+
+  var MAXDIM = 1920;      // downscale cap for embedded images
+  var JPEG_Q = 0.92;
+
+  // ---------- element refs ----------
+  var $ = function(id){ return document.getElementById(id); };
+  var app=$("app"), viewport=$("viewport"), imgA=$("imgA"), imgB=$("imgB"),
+      clipA=$("clipA"), clipB=$("clipB"), capA=$("capA"), capB=$("capB"),
+      divider=$("divider"), dline=$("dline"), grip=$("grip"), gripIcon=$("gripIcon"),
+      hint=$("hint"), empty=$("empty"),
+      dropA=$("dropA"), dropB=$("dropB"), thumbA=$("thumbA"), thumbB=$("thumbB"),
+      statusA=$("statusA"), statusB=$("statusB"),
+      toolbar=$("toolbar"), settings=$("settings"), toast=$("toast"),
+      fileA=$("fileA"), fileB=$("fileB"),
+      saveDot=$("saveDot"), saveTxt=$("saveTxt");
+
+  // ---------- storage abstraction (Office settings OR localStorage) ----------
+  var Store = {
+    useOffice:false,
+    _od:null,               // Office document
+    _k:function(name){ return "ws." + state.slot + "." + name; },
+    get:function(name){
+      var k=this._k(name);
+      try{
+        if(this.useOffice){ return this._od.settings.get(k); }
+        var v=localStorage.getItem(k); return v===null?undefined:JSON.parse(v);
+      }catch(e){ return undefined; }
+    },
+    set:function(name,val){
+      var k=this._k(name);
+      try{
+        if(this.useOffice){ this._od.settings.set(k,val); }
+        else{ localStorage.setItem(k, JSON.stringify(val)); }
+      }catch(e){}
+    },
+    save:function(){
+      var self=this;
+      setSave("saving");
+      if(this.useOffice){
+        try{
+          this._od.settings.saveAsync(function(res){
+            if(res.status===Office.AsyncResultStatus.Succeeded){ setSave("ok"); }
+            else{ setSave("error", res.error && res.error.message); }
+          });
+        }catch(e){ setSave("error"); }
+      } else {
+        setSave("ok");   // localStorage is synchronous
+      }
+    }
+  };
+
+  function setSave(kind,msg){
+    saveDot.className = "dot" + (kind==="saving"?" saving":kind==="error"?" error":"");
+    saveTxt.textContent = kind==="saving" ? "Saving…"
+                        : kind==="error" ? "Not saved"
+                        : "Saved";
+    if(kind==="error" && msg){ showToast("Couldn't embed in the deck: " + msg + " — try smaller images. Still works this session."); }
+  }
+
+  // ---------- rendering ----------
+  function pctOf(p){ return (p*100).toFixed(3) + "%"; }
+
+  function render(){
+    var p = state.pos;
+    var hasA = !!state.imgA, hasB = !!state.imgB, both = hasA && hasB;
+
+    if(state.orient==="h"){
+      app.classList.remove("vert"); app.classList.add("horiz");
+      clipA.style.clipPath = "inset(0 " + ((1-p)*100).toFixed(3) + "% 0 0)";
+      clipA.style.webkitClipPath = clipA.style.clipPath;
+      clipB.style.clipPath = "inset(0 0 0 " + (p*100).toFixed(3) + "%)";
+      clipB.style.webkitClipPath = clipB.style.clipPath;
+      dline.style.cssText = "left:"+pctOf(p)+";top:0;width:2px;height:100%;transform:translateX(-1px);";
+      grip.style.left = pctOf(p); grip.style.top = "50%";
+      gripIcon.innerHTML = "&#8596;";
+      $("btnOrient").innerHTML = "&#8596; Side&#8209;by&#8209;side";
+    } else {
+      app.classList.remove("horiz"); app.classList.add("vert");
+      clipA.style.clipPath = "inset(0 0 " + ((1-p)*100).toFixed(3) + "% 0)";
+      clipA.style.webkitClipPath = clipA.style.clipPath;
+      clipB.style.clipPath = "inset(" + (p*100).toFixed(3) + "% 0 0 0)";
+      clipB.style.webkitClipPath = clipB.style.clipPath;
+      dline.style.cssText = "top:"+pctOf(p)+";left:0;height:2px;width:100%;transform:translateY(-1px);";
+      grip.style.left = "50%"; grip.style.top = pctOf(p);
+      gripIcon.innerHTML = "&#8597;";
+      $("btnOrient").innerHTML = "&#8597; Top&#8209;/&#8209;bottom";
+    }
+
+    // captions
+    setCap(capA, state.showLabels ? state.labelA : "");
+    setCap(capB, state.showLabels ? state.labelB : "");
+
+    // visibility — keep the upload screen until BOTH images are inserted
+    empty.style.display = both ? "none" : "flex";
+    divider.style.display = both ? "block" : "none";
+    updateDropZones();
+    layoutCaptions();
+  }
+
+  function setCap(el, txt){
+    if(txt && txt.trim()){ el.textContent = txt; el.style.display="block"; }
+    else { el.style.display="none"; }
+  }
+
+  // Place each label in the corner of its own image region, always clear of the
+  // top toolbar. Horizontal: A bottom-left, B bottom-right. Vertical (A on top,
+  // B on bottom): A top-left but pushed below the toolbar when it's showing.
+  function layoutCaptions(){
+    var pad = 14;
+    capA.style.top = capA.style.bottom = capA.style.left = capA.style.right = "auto";
+    capB.style.top = capB.style.bottom = capB.style.left = capB.style.right = "auto";
+    if(state.orient === "h"){
+      capA.style.left = pad + "px";  capA.style.bottom = pad + "px";
+      capB.style.right = pad + "px"; capB.style.bottom = pad + "px";
+    } else {
+      var tbH = toolbar.classList.contains("show") ? (toolbar.offsetHeight + 8) : pad;
+      capA.style.left = pad + "px"; capA.style.top = tbH + "px";
+      capB.style.right = pad + "px"; capB.style.bottom = pad + "px";
+    }
+  }
+
+  // Reflect which slots are already filled on the upload screen.
+  function updateDropZones(){
+    var rows = [["A", state.imgA, dropA, thumbA, statusA],
+                ["B", state.imgB, dropB, thumbB, statusB]];
+    rows.forEach(function(r){
+      var data=r[1], zone=r[2], thumb=r[3], status=r[4];
+      if(data){ zone.classList.add("filled"); thumb.src=data; status.textContent="Loaded · click to replace"; }
+      else { zone.classList.remove("filled"); thumb.removeAttribute("src"); status.textContent="click, drop, or paste"; }
+    });
+  }
+
+  function applyImages(){
+    imgA.src = state.imgA || "";
+    imgB.src = state.imgB || "";
+  }
+
+  // ---------- image loading / downscaling ----------
+  function loadDownscaled(file){
+    return new Promise(function(res,rej){
+      if(!file || !/^image\//.test(file.type||"")){ rej(new Error("Not an image")); return; }
+      var url = URL.createObjectURL(file);
+      var im = new Image();
+      im.onload = function(){
+        try{
+          var w=im.naturalWidth, h=im.naturalHeight;
+          var scale = Math.min(1, MAXDIM/Math.max(w,h));
+          var cw=Math.max(1,Math.round(w*scale)), ch=Math.max(1,Math.round(h*scale));
+          var c=document.createElement("canvas"); c.width=cw; c.height=ch;
+          var ctx=c.getContext("2d");
+          ctx.fillStyle="#000"; ctx.fillRect(0,0,cw,ch);
+          ctx.drawImage(im,0,0,cw,ch);
+          URL.revokeObjectURL(url);
+          res(c.toDataURL("image/jpeg", JPEG_Q));
+        }catch(e){ URL.revokeObjectURL(url); rej(e); }
+      };
+      im.onerror = function(){ URL.revokeObjectURL(url); rej(new Error("Could not read image")); };
+      im.src = url;
+    });
+  }
+
+  function setImage(which, dataUrl){
+    if(which==="A"){ state.imgA = dataUrl; } else { state.imgB = dataUrl; }
+    applyImages();
+    Store.set(which==="A"?"imgA":"imgB", dataUrl);
+    Store.set("pos", state.pos);
+    render();
+    Store.save();
+    showToast("Image " + which + " loaded");
+    maybeHint();
+  }
+
+  function handleFile(which, file){
+    loadDownscaled(file).then(function(d){ setImage(which,d); })
+      .catch(function(e){ showToast(e.message||"Could not load image"); });
+  }
+
+  // ---------- persistence load ----------
+  function loadState(){
+    var g=Store.get.bind(Store);
+    var a=g("imgA"), b=g("imgB"), pos=g("pos"), or=g("orient"),
+        la=g("labelA"), lb=g("labelB"), sl=g("showLabels");
+    if(typeof a==="string") state.imgA=a;
+    if(typeof b==="string") state.imgB=b;
+    if(typeof pos==="number") state.pos=Math.min(1,Math.max(0,pos));
+    if(or==="h"||or==="v") state.orient=or;
+    if(typeof la==="string") state.labelA=la;
+    if(typeof lb==="string") state.labelB=lb;
+    if(typeof sl==="boolean") state.showLabels=sl;
+    // reflect into settings UI
+    $("inLabelA").value=state.labelA;
+    $("inLabelB").value=state.labelB;
+    $("chkLabels").checked=state.showLabels;
+    $("selSlot").value=state.slot;
+    applyImages();
+    render();
+  }
+
+  function switchSlot(newSlot){
+    // persist active-slot pointer, then reload that slot's data
+    state.slot=newSlot;
+    try{ localStorage.setItem("ws.activeSlot", newSlot); }catch(e){}
+    if(Store.useOffice){ try{ Store._od.settings.set("ws.activeSlot", newSlot); Store._od.settings.saveAsync(function(){}); }catch(e){} }
+    state.imgA=null; state.imgB=null; state.pos=0.5;
+    state.labelA=""; state.labelB=""; state.showLabels=true;
+    loadState();
+    showToast("Switched to slot " + newSlot);
+  }
+
+  // ---------- dragging ----------
+  var dragging=false;
+  function posFromEvent(e){
+    var r=viewport.getBoundingClientRect();
+    var p = state.orient==="h" ? (e.clientX-r.left)/r.width
+                               : (e.clientY-r.top)/r.height;
+    return Math.min(1, Math.max(0, p));
+  }
+  function onDown(e){
+    if(!(state.imgA && state.imgB)) return;   // nothing to compare yet
+    dragging=true;
+    hideHint();
+    try{ viewport.setPointerCapture(e.pointerId); }catch(_){}
+    state.pos=posFromEvent(e); render();
+    e.preventDefault();
+  }
+  function onMove(e){ if(dragging){ state.pos=posFromEvent(e); render(); } }
+  function onUp(e){
+    if(!dragging) return;
+    dragging=false;
+    try{ viewport.releasePointerCapture(e.pointerId); }catch(_){}
+    Store.set("pos", state.pos); Store.save();
+  }
+  viewport.addEventListener("pointerdown", onDown);
+  viewport.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  viewport.addEventListener("dblclick", function(){
+    if(!(state.imgA&&state.imgB)) return;
+    state.pos=0.5; render(); Store.set("pos",0.5); Store.save();
+  });
+
+  // ---------- keyboard ----------
+  window.addEventListener("keydown", function(e){
+    if(document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    if(!(state.imgA&&state.imgB)) return;
+    var step = e.shiftKey?0.005:0.02, moved=false;
+    if(e.key==="ArrowRight"||e.key==="ArrowUp"){ state.pos=Math.min(1,state.pos+step); moved=true; }
+    else if(e.key==="ArrowLeft"||e.key==="ArrowDown"){ state.pos=Math.max(0,state.pos-step); moved=true; }
+    else if(e.key==="o"||e.key==="O"){ if(!presenting) toggleOrient(); }
+    else if(e.key==="s"||e.key==="S"){ if(!presenting) swap(); }
+    if(moved){ render(); Store.set("pos",state.pos); Store.save(); e.preventDefault(); }
+  });
+
+  // ---------- toolbar actions ----------
+  function toggleOrient(){
+    state.orient = state.orient==="h" ? "v" : "h";
+    render(); Store.set("orient",state.orient); Store.save();
+  }
+  function swap(){
+    var t=state.imgA; state.imgA=state.imgB; state.imgB=t;
+    var tl=state.labelA; state.labelA=state.labelB; state.labelB=tl;
+    $("inLabelA").value=state.labelA; $("inLabelB").value=state.labelB;
+    applyImages(); render();
+    Store.set("imgA",state.imgA); Store.set("imgB",state.imgB);
+    Store.set("labelA",state.labelA); Store.set("labelB",state.labelB);
+    Store.save();
+  }
+  $("btnOrient").addEventListener("click", toggleOrient);
+  $("btnSwap").addEventListener("click", swap);
+  $("btnReset").addEventListener("click", function(){
+    state.pos=0.5; render(); Store.set("pos",0.5); Store.save();
+  });
+  $("btnA").addEventListener("click", function(){ fileA.click(); });
+  $("btnB").addEventListener("click", function(){ fileB.click(); });
+  $("btnReplaceA").addEventListener("click", function(){ fileA.click(); });
+  $("btnReplaceB").addEventListener("click", function(){ fileB.click(); });
+  $("dropA").addEventListener("click", function(){ fileA.click(); });
+  $("dropB").addEventListener("click", function(){ fileB.click(); });
+  fileA.addEventListener("change", function(){ if(fileA.files[0]) handleFile("A",fileA.files[0]); fileA.value=""; });
+  fileB.addEventListener("change", function(){ if(fileB.files[0]) handleFile("B",fileB.files[0]); fileB.value=""; });
+
+  // settings panel
+  $("btnGear").addEventListener("click", function(){ settings.classList.toggle("open"); });
+  $("btnClose").addEventListener("click", function(){ settings.classList.remove("open"); });
+  $("inLabelA").addEventListener("input", function(){ state.labelA=this.value; render(); Store.set("labelA",state.labelA); });
+  $("inLabelA").addEventListener("change", function(){ Store.save(); });
+  $("inLabelB").addEventListener("input", function(){ state.labelB=this.value; render(); Store.set("labelB",state.labelB); });
+  $("inLabelB").addEventListener("change", function(){ Store.save(); });
+  $("chkLabels").addEventListener("change", function(){ state.showLabels=this.checked; render(); Store.set("showLabels",state.showLabels); Store.save(); });
+  $("selSlot").addEventListener("change", function(){ switchSlot(this.value); });
+
+  // ---------- drag & drop onto the viewport ----------
+  ["dragenter","dragover"].forEach(function(ev){
+    viewport.addEventListener(ev, function(e){ e.preventDefault(); e.dataTransfer.dropEffect="copy"; });
+  });
+  viewport.addEventListener("drop", function(e){
+    e.preventDefault();
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(!f) return;
+    var which;
+    if(!state.imgA) which="A";
+    else if(!state.imgB) which="B";
+    else {
+      // both present: choose by drop position relative to the split
+      var r=viewport.getBoundingClientRect();
+      which = state.orient==="h"
+        ? ((e.clientX-r.left)/r.width < state.pos ? "A":"B")
+        : ((e.clientY-r.top)/r.height < state.pos ? "A":"B");
+    }
+    handleFile(which,f);
+  });
+  // hover highlight for empty-state drop zones
+  [["dropA","A"],["dropB","B"]].forEach(function(pair){
+    var el=$(pair[0]);
+    ["dragenter","dragover"].forEach(function(ev){ el.addEventListener(ev,function(e){ e.preventDefault(); el.classList.add("hot"); }); });
+    ["dragleave","drop"].forEach(function(ev){ el.addEventListener(ev,function(){ el.classList.remove("hot"); }); });
+    el.addEventListener("drop", function(e){ e.preventDefault(); e.stopPropagation();
+      var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) handleFile(pair[1],f); });
+  });
+
+  // ---------- paste ----------
+  window.addEventListener("paste", function(e){
+    var items=(e.clipboardData||{}).items||[]; var file=null;
+    for(var i=0;i<items.length;i++){ if(items[i].type && items[i].type.indexOf("image")===0){ file=items[i].getAsFile(); break; } }
+    if(!file) return;
+    var which = !state.imgA ? "A" : !state.imgB ? "B" : "A";
+    handleFile(which,file);
+    e.preventDefault();
+  });
+
+  // ---------- toolbar auto-hide ----------
+  var hideTimer=null;
+  function showToolbar(){
+    toolbar.classList.add("show");
+    layoutCaptions();
+    if(hideTimer) clearTimeout(hideTimer);
+    hideTimer=setTimeout(function(){
+      if(!settings.classList.contains("open") && state.imgA && state.imgB){
+        toolbar.classList.remove("show");
+        layoutCaptions();
+      }
+    }, 2600);
+  }
+  app.addEventListener("pointermove", showToolbar);
+  app.addEventListener("pointerdown", showToolbar);
+  // when no images yet, keep toolbar visible
+  function refreshToolbarPersistence(){
+    if(!(state.imgA&&state.imgB)) toolbar.classList.add("show");
+  }
+
+  // ---------- toast + hint ----------
+  var toastTimer=null;
+  function showToast(msg){
+    toast.textContent=msg; toast.classList.add("show");
+    if(toastTimer) clearTimeout(toastTimer);
+    toastTimer=setTimeout(function(){ toast.classList.remove("show"); }, 2200);
+  }
+  var hintTimer=null;
+  function maybeHint(){
+    if(state.imgA && state.imgB){
+      hint.classList.add("show");
+      if(hintTimer) clearTimeout(hintTimer);
+      hintTimer=setTimeout(hideHint, 3200);
+    }
+  }
+  function hideHint(){ hint.classList.remove("show"); }
+
+  // ---------- presenter (slide show) mode ----------
+  function setPresenting(on){
+    presenting = !!on;
+    if(presenting){ app.classList.add("presenting"); settings.classList.remove("open"); }
+    else { app.classList.remove("presenting"); }
+    layoutCaptions();
+  }
+  function isReadView(v){ return String(v||"").toLowerCase()==="read"; }
+  // Detect the current view and follow live changes (edit <-> slide show).
+  function watchActiveView(doc){
+    try{
+      if(doc.getActiveViewAsync){
+        doc.getActiveViewAsync(function(res){
+          if(res && res.status===Office.AsyncResultStatus.Succeeded){ setPresenting(isReadView(res.value)); }
+        });
+      }
+      if(doc.addHandlerAsync && Office.EventType && Office.EventType.ActiveViewChanged){
+        doc.addHandlerAsync(Office.EventType.ActiveViewChanged, function(args){
+          setPresenting(isReadView(args && args.activeView));
+        });
+      }
+    }catch(e){}
+  }
+
+  // ---------- startup ----------
+  function startup(useOffice, officeDoc){
+    Store.useOffice=useOffice; Store._od=officeDoc;
+    // restore active slot pointer if present
+    try{
+      var as = useOffice && officeDoc ? officeDoc.settings.get("ws.activeSlot") : localStorage.getItem("ws.activeSlot");
+      if(as){ state.slot = String(as).replace(/^"|"$/g,""); }
+    }catch(e){}
+    $("selSlot").value=state.slot;
+    loadState();
+    refreshToolbarPersistence();
+    showToolbar();
+    maybeHint();
+    setSave("ok"); saveTxt.textContent = useOffice ? "Saved in deck" : "Saved locally";
+  }
+
+  if(window.Office && Office.onReady){
+    Office.onReady(function(info){
+      var isOffice = !!(info && info.host) && !!(Office.context && Office.context.document && Office.context.document.settings);
+      startup(isOffice, isOffice ? Office.context.document : null);
+      if(isOffice){ watchActiveView(Office.context.document); }
+    });
+  } else {
+    // opened as a plain web page
+    startup(false, null);
+  }
+})();
+</script>
+</body>
+</html>
